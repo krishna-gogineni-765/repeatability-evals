@@ -44,8 +44,14 @@ def cycle_pairs(n_items: int, budget: Optional[int] = None, seed: int = 0) -> Li
     rng = random.Random(seed)
     order = list(range(n_items))
     rng.shuffle(order)  # random cycle: no positional bias
-    ring = list(dict.fromkeys(_norm(order[k], order[(k + 1) % n_items]) for k in range(n_items)))
-    ring = ring[0::2] + ring[1::2]  # even edges form a matching -> best coverage if truncated
+    ring = [_norm(order[k], order[(k + 1) % n_items]) for k in range(n_items)]
+    # Order edges so a truncated budget still covers as many items as possible: a matching
+    # first (edges 0, 2, 4, ...), then for odd N the closing edge, which reaches the one item
+    # the matching misses, then the rest of the cycle.
+    first = ring[0 : n_items - 1 : 2] if n_items % 2 else ring[0::2]
+    if n_items % 2:
+        first.append(ring[-1])
+    ring = first + [e for e in ring if e not in first]
     chosen = ring[:budget]
     if len(chosen) < budget:
         taken = set(chosen)
@@ -102,13 +108,13 @@ class AnchorPairs:
         return [_norm(self.anchor, k) for k in range(n_items) if k != self.anchor]
 
 
-@dataclass
+@dataclass(frozen=True)
 class CrossSampler:
     """Pairs between two groups of runs, e.g. baseline runs vs. candidate runs.
 
     Treats ``A + B`` as one list of ``n_a + n_b`` items and returns only (a, b) pairs. The
     default budget is ``max(n_a, n_b)``: every run on both sides is compared at least once.
-    Use ``budget=None`` with small groups for all ``n_a * n_b`` pairs via ``budget=n_a * n_b``.
+    Pass ``budget=n_a * n_b`` (or more) for every cross pair.
     """
 
     n_a: int
@@ -134,7 +140,8 @@ class CrossSampler:
         if budget < span:
             chosen = chosen[:budget]
         else:
-            rest = [(i, j) for i in range(n_a) for j in range(n_b) if (i, j) not in set(chosen)]
+            taken = set(chosen)
+            rest = [(i, j) for i in range(n_a) for j in range(n_b) if (i, j) not in taken]
             rng.shuffle(rest)
             chosen += rest[: budget - span]
         return [(i, n_a + j) for i, j in chosen]

@@ -18,7 +18,7 @@ def test_cli_offline_compare_exit_codes_and_report(tmp_path, capsys):
     diff = {f"q{i}": {"query": "how long?", "outputs": ["totally unrelated words here now"] * 3}
             for i in range(10)}
     c = write(tmp_path, "c.json", diff)
-    assert main(["compare", a, c, "--no-text"]) == 2
+    assert main(["compare", a, c, "--no-text"]) == 4
     out = capsys.readouterr().out
     assert "CHANGED" in out and "totally unrelated" not in out
 

@@ -1,7 +1,14 @@
 """repeatability-evals: consistency evals for non-deterministic LLM systems."""
 from .compare import InputComparison, VersionComparison, acompare_versions, compare_versions
 from .dataset import DatasetResult, aevaluate_groups, evaluate_groups
-from .metrics import ClusterConsistency, ConsistencyMetric, PairwiseConsistency, TotalAgreement
+from .metrics import (
+    AllComparisonsFailed,
+    ClusterConsistency,
+    ConsistencyMetric,
+    PairwiseConsistency,
+    TotalAgreement,
+    call_limit,
+)
 from .prompts import DEFAULT_DIMENSIONS, SEMANTIC_EQUIVALENCE_PROMPT, Dimension, build_rubric_prompt
 from .sampling import AllPairs, AnchorPairs, CrossSampler, CycleSampler, PairSampler, RandomPairs, cycle_pairs
 from .similarity import (
@@ -20,18 +27,21 @@ from .similarity import (
     RubricJudge,
     Similarity,
     as_similarity,
+    render_prompt,
 )
 from .stats import bootstrap_ci
 from .types import ConsistencyResult, PairScore, SimilarityResult
 
 try:
-    from importlib.metadata import PackageNotFoundError, version as _version
+    from importlib.metadata import PackageNotFoundError
+    from importlib.metadata import version as _version
 
     __version__ = _version("repeatability-evals")
 except PackageNotFoundError:  # running from a source checkout that is not installed
     __version__ = "0+unknown"
 
 __all__ = [
+    "call_limit", "AllComparisonsFailed", "render_prompt",
     "compare_versions", "acompare_versions", "VersionComparison", "InputComparison", "CrossSampler",
     "ConsistencyMetric", "PairwiseConsistency", "ClusterConsistency", "TotalAgreement",
     "evaluate_groups", "aevaluate_groups", "DatasetResult", "bootstrap_ci",

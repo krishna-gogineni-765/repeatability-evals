@@ -38,8 +38,8 @@ v2 = version(lambda q: 90 if q % 8 == 0 else 30, lambda q: q % 5 == 0)
 
 def judge(prompt):
     """Scripted stand-in for an LLM: scores each dimension by simple rules."""
-    a = prompt.split("Response A:")[1].split("Response B:")[0]
-    b = prompt.split("Response B:")[1].split("Score each dimension")[0]
+    a = prompt.split("<response_a>")[1].split("</response_a>")[0]
+    b = prompt.split("<response_b>")[1].split("</response_b>")[0]
     num = lambda t: re.findall(r"\d+", t)  # noqa: E731
     bullets = lambda t: t.lstrip().startswith("-")  # noqa: E731
     scores = {d.name: 5 for d in DEFAULT_DIMENSIONS}

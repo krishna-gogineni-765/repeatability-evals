@@ -7,15 +7,54 @@ pick the Similarity that suits them.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import contextvars
+import json
 import math
 from abc import ABC, abstractmethod
-from typing import Any, Callable, List, Optional, Sequence
+from typing import Any, Callable, Iterator, List, Optional, Sequence, Tuple
 
 from .sampling import CycleSampler, PairSampler
 from .similarity.base import Context, Similarity, as_similarity
 from .similarity.text import default_normalize
 from .stats import mean
 from .types import ConsistencyResult, PairScore, SimilarityResult
+
+ON_ERROR = ("raise", "skip")
+_MAX_ERRORS_KEPT = 5
+
+# A semaphore shared by every similarity call in the current async task tree. Set by
+# ``call_limit`` (used by ``acompare_versions`` / ``aevaluate_groups``) so a global cap holds
+# even when many groups and metrics run at once. Without it each ``aevaluate`` uses its own.
+_CALL_LIMIT: contextvars.ContextVar[Optional[asyncio.Semaphore]] = contextvars.ContextVar(
+    "repeatability_evals_call_limit", default=None
+)
+
+
+@contextlib.contextmanager
+def call_limit(max_calls: Optional[int]) -> Iterator[None]:
+    """Cap concurrent similarity calls across everything awaited inside this block.
+
+    Must be entered inside a running event loop::
+
+        async def main():
+            with call_limit(8):
+                await asyncio.gather(m.aevaluate(a), m.aevaluate(b))
+    """
+    if max_calls is None:
+        yield
+        return
+    if max_calls < 1:
+        raise ValueError("max_calls must be >= 1")
+    token = _CALL_LIMIT.set(asyncio.Semaphore(max_calls))
+    try:
+        yield
+    finally:
+        _CALL_LIMIT.reset(token)
+
+
+class AllComparisonsFailed(RuntimeError):
+    """Every comparison in a group raised (only with ``on_error="skip"``)."""
 
 
 class ConsistencyMetric(ABC):
@@ -33,12 +72,23 @@ class ConsistencyMetric(ABC):
 
 
 def _degenerate(name: str, n_items: int) -> ConsistencyResult:
-    # Nothing to disagree with: zero or one item is trivially consistent.
+    # Nothing to disagree with: zero or one item is trivially consistent. Dataset-level
+    # summaries exclude these groups from their means (see ``details["degenerate"]``).
     return ConsistencyResult(name, 1.0, 1.0, n_items, 0, [], {"degenerate": True})
 
 
 def _pair_score(i: int, j: int, r: SimilarityResult) -> PairScore:
     return PairScore(i, j, r.score, r.raw, r.reason, r.metadata.get("dimensions"))
+
+
+def _check_on_error(on_error: str) -> str:
+    if on_error not in ON_ERROR:
+        raise ValueError(f"on_error must be one of {ON_ERROR}")
+    return on_error
+
+
+def _semaphore(concurrency: int) -> asyncio.Semaphore:
+    return _CALL_LIMIT.get() or asyncio.Semaphore(concurrency)
 
 
 class PairwiseConsistency(ConsistencyMetric):
@@ -52,7 +102,13 @@ class PairwiseConsistency(ConsistencyMetric):
         agreement_threshold: if set, ``details["agreement_rate"]`` reports the share of
             compared pairs scoring at least this (on the normalised [0, 1] scale).
         aggregate: how to combine pair scores into ``score`` (default: mean).
-        concurrency: max simultaneous similarity calls in ``aevaluate``.
+        concurrency: max simultaneous similarity calls in ``aevaluate`` (unless a wider
+            ``call_limit`` is active).
+        on_error: ``"raise"`` (default) propagates the first failing comparison.
+            ``"skip"`` drops failing pairs, scores the rest and reports
+            ``details["n_failed"]`` and ``details["errors"]``; if every pair fails it raises
+            ``AllComparisonsFailed``. Useful for long LLM-judge runs where one bad reply or
+            timeout should not abort the whole evaluation.
     """
 
     def __init__(
@@ -65,6 +121,7 @@ class PairwiseConsistency(ConsistencyMetric):
         aggregate: Optional[Callable[[Sequence[float]], float]] = None,
         name: Optional[str] = None,
         concurrency: int = 8,
+        on_error: str = "raise",
     ) -> None:
         self.similarity: Similarity = as_similarity(similarity)
         self.sampler = sampler or CycleSampler()
@@ -73,11 +130,18 @@ class PairwiseConsistency(ConsistencyMetric):
         self.aggregate = aggregate or mean
         self.name = name or f"pairwise_{self.similarity.name}"
         self.concurrency = concurrency
+        self.on_error = _check_on_error(on_error)
 
     def _prepare(self, items: Sequence[Any]) -> List[Any]:
         return [self.preprocess(x) for x in items] if self.preprocess else list(items)
 
-    def _finish(self, n_items: int, pairs: List[PairScore]) -> ConsistencyResult:
+    def _finish(
+        self, n_items: int, pairs: List[PairScore], errors: List[Tuple[int, int, BaseException]]
+    ) -> ConsistencyResult:
+        if not pairs:
+            raise AllComparisonsFailed(
+                f"all {len(errors)} comparisons failed; first error: {errors[0][2]!r}"
+            ) from errors[0][2]
         scores = [p.score for p in pairs]
         details = {"similarity": self.similarity.name, "sampler": type(self.sampler).__name__}
         if self.agreement_threshold is not None:
@@ -85,6 +149,9 @@ class PairwiseConsistency(ConsistencyMetric):
         dims = [p.dimensions for p in pairs if p.dimensions]
         if dims:  # rubric judges: mean score per dimension, so you can see *what* varies
             details["dimensions"] = {k: mean([d[k] for d in dims]) for k in dims[0]}
+        if errors:
+            details["n_failed"] = len(errors)
+            details["errors"] = [f"({i}, {j}): {e!r}" for i, j, e in errors[:_MAX_ERRORS_KEPT]]
         return ConsistencyResult(
             self.name, self.aggregate(scores), min(scores), n_items, len(pairs), pairs, details
         )
@@ -94,11 +161,19 @@ class PairwiseConsistency(ConsistencyMetric):
         pairs = self.sampler.sample(len(prepared))
         if not pairs:
             return _degenerate(self.name, len(prepared))
-        scored = [
-            _pair_score(i, j, self.similarity.score(prepared[i], prepared[j], context=context))
-            for i, j in pairs
-        ]
-        return self._finish(len(prepared), scored)
+        self.similarity.prepare(prepared)
+        scored: List[PairScore] = []
+        errors: List[Tuple[int, int, BaseException]] = []
+        for i, j in pairs:
+            try:
+                r = self.similarity.score(prepared[i], prepared[j], context=context)
+            except Exception as e:
+                if self.on_error == "raise":
+                    raise
+                errors.append((i, j, e))
+                continue
+            scored.append(_pair_score(i, j, r))
+        return self._finish(len(prepared), scored, errors)
 
     async def aevaluate(
         self, items: Sequence[Any], *, context: Context = None
@@ -107,15 +182,23 @@ class PairwiseConsistency(ConsistencyMetric):
         pairs = self.sampler.sample(len(prepared))
         if not pairs:
             return _degenerate(self.name, len(prepared))
-        sem = asyncio.Semaphore(self.concurrency)
+        await self.similarity.aprepare(prepared)
+        sem = _semaphore(self.concurrency)
 
-        async def one(i: int, j: int) -> PairScore:
+        async def one(i: int, j: int) -> Any:
             async with sem:
-                r = await self.similarity.ascore(prepared[i], prepared[j], context=context)
+                try:
+                    r = await self.similarity.ascore(prepared[i], prepared[j], context=context)
+                except Exception as e:
+                    if self.on_error == "raise":
+                        raise
+                    return (i, j, e)
             return _pair_score(i, j, r)
 
-        scored = await asyncio.gather(*(one(i, j) for i, j in pairs))
-        return self._finish(len(prepared), list(scored))
+        out = await asyncio.gather(*(one(i, j) for i, j in pairs))
+        scored = [x for x in out if isinstance(x, PairScore)]
+        errors = [x for x in out if not isinstance(x, PairScore)]
+        return self._finish(len(prepared), scored, errors)
 
 
 class ClusterConsistency(ConsistencyMetric):
@@ -160,6 +243,7 @@ class ClusterConsistency(ConsistencyMetric):
         prepared = self._prepare(items)
         if len(prepared) < 2:
             return _degenerate(self.name, len(prepared))
+        self.similarity.prepare(prepared)
         members: List[List[int]] = []
         pairs: List[PairScore] = []
         for idx, item in enumerate(prepared):
@@ -179,7 +263,8 @@ class ClusterConsistency(ConsistencyMetric):
         prepared = self._prepare(items)
         if len(prepared) < 2:
             return _degenerate(self.name, len(prepared))
-        sem = asyncio.Semaphore(self.concurrency)
+        await self.similarity.aprepare(prepared)
+        sem = _semaphore(self.concurrency)
         members: List[List[int]] = []
         pairs: List[PairScore] = []
 
@@ -200,6 +285,13 @@ class ClusterConsistency(ConsistencyMetric):
         return self._result(len(prepared), members, pairs)
 
 
+def _normalize_any(x: Any) -> Any:
+    """Default TotalAgreement key: normalised text for strings, canonical JSON otherwise."""
+    if isinstance(x, str):
+        return default_normalize(x)
+    return json.dumps(x, sort_keys=True, default=str)
+
+
 class TotalAgreement(ConsistencyMetric):
     """1.0 if *all* items are identical after normalisation, else 0.0.
 
@@ -210,8 +302,8 @@ class TotalAgreement(ConsistencyMetric):
 
     name = "total_agreement"
 
-    def __init__(self, normalize: Callable[[Any], Any] = default_normalize) -> None:
-        self.normalize = normalize
+    def __init__(self, normalize: Optional[Callable[[Any], Any]] = None) -> None:
+        self.normalize = normalize or _normalize_any
 
     def evaluate(self, items: Sequence[Any], *, context: Context = None) -> ConsistencyResult:
         if len(items) < 2:
