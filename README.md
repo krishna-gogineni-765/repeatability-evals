@@ -1,4 +1,6 @@
-# consistency-evals
+# repeatability-evals
+
+**Consistency evals for non-deterministic systems: LLM generation, agentic retrieval, agent workflows.**
 
 Composable tools for measuring **how consistent an LLM system is with itself**: the same
 input run several times, or an input and its paraphrases, and how much the outputs agree.
@@ -24,13 +26,13 @@ with an accuracy metric.
 ## Install
 
 ```bash
-pip install consistency-evals   # pure standard library, no required dependencies
+pip install repeatability-evals   # pure standard library, no required dependencies
 ```
 
 ## Quickstart
 
 ```python
-from consistency_evals import (
+from repeatability_evals import (
     PairwiseConsistency, JaccardSimilarity, NgramJaccard, LLMJudge, evaluate_groups,
 )
 
@@ -61,7 +63,7 @@ Three small pieces, each replaceable:
 * **`Similarity`**: compare two items, return a score in `[0, 1]` (optionally with a raw value
   and a rationale). Built in: set overlap (`Jaccard`, `Dice`, `OverlapCoefficient`), text
   (`ExactMatch`, `NgramJaccard`, `RougeL`, `EditSimilarity`), ranking (`RankBiasedOverlap`),
-  embeddings (`EmbeddingCosine`, bring your own embed function), and `LLMJudge`.
+  embeddings (`EmbeddingCosine`, bring your own embed function), and `RubricJudge` and `LLMJudge`.
 * **`PairSampler`**: which pairs of the N items to compare (see below).
 * **`ConsistencyMetric`**: combines them. `PairwiseConsistency` averages similarity over
   sampled pairs; `ClusterConsistency` groups items into "same answer" clusters and reports the
@@ -79,10 +81,25 @@ It is seeded and reproducible. `AllPairs()` gives the exact value; `RandomPairs(
 `AnchorPairs()` (every run against one reference) are also available. `benchmarks/sampling_error.py`
 measures the error this introduces on synthetic data so you can see the trade-off for your N.
 
-### The LLM judge
+### The LLM judges
 
-`LLMJudge` takes any completion function, so it works with any provider or a local model. The
-default rubric (1-5, normalised to `[0, 1]`) is in `consistency_evals.prompts`. `symmetric=True`
+`RubricJudge` is the recommended judge for free-text outputs. One call scores five dimensions
+of agreement (1-5 each): `core_facts`, `specifics` (names, numbers, dates), `supporting_detail`,
+`stance` (answer vs hedge vs refuse) and `format`. The headline score is their weighted mean
+(core facts count most), and `PairwiseConsistency` reports the mean per dimension in
+`details["dimensions"]`, so you can see *what* varies between runs: a system whose facts are
+stable but whose formatting drifts looks very different from one that changes its answer.
+Pass your own `Dimension`s to add, remove or reweight (e.g. for agent traces).
+
+```python
+from repeatability_evals import RubricJudge, PairwiseConsistency
+m = PairwiseConsistency(RubricJudge(complete))
+r = m.evaluate(runs, context={"query": question})
+print(r.score, r.details["dimensions"])   # {'core_facts': 0.95, 'format': 0.4, ...}
+```
+
+`LLMJudge` is the single-score version (one 1-5 semantic-equivalence rating). Both take any completion function, so it works with any provider or a local model. The
+default rubrics (1-5, normalised to `[0, 1]`) are in `repeatability_evals.prompts`. `symmetric=True`
 judges both orderings to cancel position bias at twice the cost. **Validate any judge against
 human ratings on your own data before relying on it**; agreement depends on the domain and the
 judge model.
@@ -90,7 +107,7 @@ judge model.
 ## Writing your own similarity
 
 ```python
-from consistency_evals import Similarity, PairwiseConsistency
+from repeatability_evals import Similarity, PairwiseConsistency
 
 class SameFirstSentence(Similarity):
     name = "same_first_sentence"

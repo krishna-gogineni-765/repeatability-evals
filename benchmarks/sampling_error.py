@@ -9,7 +9,7 @@ import json
 import random
 import statistics
 
-from consistency_evals import CycleSampler, NgramJaccard
+from repeatability_evals import CycleSampler, NgramJaccard
 
 
 def synthetic(n_q, n_runs, rng):

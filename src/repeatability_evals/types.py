@@ -24,6 +24,7 @@ class PairScore:
     score: float
     raw: Optional[float] = None
     reason: Optional[str] = None
+    dimensions: Optional[Dict[str, float]] = None  # per-rubric-dimension scores in [0, 1]
 
 
 @dataclass

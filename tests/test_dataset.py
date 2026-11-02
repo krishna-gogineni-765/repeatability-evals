@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from consistency_evals import (
+from repeatability_evals import (
     AllPairs,
     ExactMatch,
     LLMJudge,

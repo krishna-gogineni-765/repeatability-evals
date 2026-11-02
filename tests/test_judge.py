@@ -1,9 +1,10 @@
 import asyncio
+import json
 
 import pytest
 
-from consistency_evals import JudgeParseError, LLMJudge, PairwiseConsistency
-from consistency_evals.similarity.judge import parse_judge_output
+from repeatability_evals import JudgeParseError, LLMJudge, PairwiseConsistency
+from repeatability_evals.similarity.judge import parse_judge_output
 
 SCALE = (1.0, 5.0)
 
@@ -85,10 +86,92 @@ def test_judge_inside_pairwise_metric_end_to_end():
     def llm(prompt):
         return '{"score": 5}' if "outlier" not in prompt else '{"score": 1, "reason": "differs"}'
     metric = PairwiseConsistency(LLMJudge(llm), agreement_threshold=0.75)
-    from consistency_evals import AllPairs
+    from repeatability_evals import AllPairs
     metric.sampler = AllPairs()
     r = metric.evaluate(["same", "same", "outlier"], context={"query": "q"})
     assert r.n_pairs == 3
     assert r.score == pytest.approx((1 + 0 + 0) / 3)
     assert r.details["agreement_rate"] == pytest.approx(1 / 3)
     assert any(p.reason == "differs" for p in r.pairs)
+
+
+# ---- RubricJudge ----------------------------------------------------------
+
+from repeatability_evals import (  # noqa: E402
+    DEFAULT_DIMENSIONS,
+    AllPairs,
+    Dimension,
+    RubricJudge,
+    build_rubric_prompt,
+)
+from repeatability_evals.similarity.judge import parse_rubric_output  # noqa: E402
+
+NAMES = [d.name for d in DEFAULT_DIMENSIONS]
+
+
+def reply(**over):
+    scores = {n: 5 for n in NAMES}
+    scores.update(over)
+    return json.dumps({"reason": "r", "scores": scores})
+
+
+def test_default_rubric_has_at_most_five_dimensions_and_prompt_lists_them():
+    assert len(DEFAULT_DIMENSIONS) <= 5
+    prompt = build_rubric_prompt()
+    assert all(f"- {n}:" in prompt for n in NAMES) and '"scores"' in prompt
+    assert "{item_a}" in prompt and "{query}" in prompt
+
+
+def test_rubric_weighted_score_and_per_dimension_metadata():
+    r = RubricJudge(lambda p: reply(format=1)).score("a", "b")
+    assert r.metadata["dimensions"]["format"] == 0.0
+    assert r.metadata["dimensions"]["core_facts"] == 1.0
+    assert r.score == pytest.approx(0.90)            # format weight is 0.10
+    assert r.raw == pytest.approx(1 + 0.90 * 4)
+
+
+def test_rubric_core_difference_hurts_more_than_format_difference():
+    core = RubricJudge(lambda p: reply(core_facts=1))("a", "b")
+    fmt = RubricJudge(lambda p: reply(format=1))("a", "b")
+    assert core < fmt
+
+
+def test_rubric_parse_errors_and_clamping():
+    with pytest.raises(JudgeParseError):
+        parse_rubric_output("nope", NAMES, SCALE)
+    with pytest.raises(JudgeParseError):
+        parse_rubric_output('{"scores": {"core_facts": 5}}', NAMES, SCALE)
+    out, _ = parse_rubric_output(reply(core_facts=9, format=0), NAMES, SCALE)
+    assert out["core_facts"] == 5.0 and out["format"] == 1.0
+
+
+def test_custom_dimensions_and_validation():
+    dims = [Dimension("a", "first", 3), Dimension("b", "second", 1)]
+    judge = RubricJudge(lambda p: '{"scores": {"a": 5, "b": 1}}', dimensions=dims)
+    assert judge("x", "y") == pytest.approx(0.75)
+    with pytest.raises(ValueError):
+        RubricJudge(lambda p: "", dimensions=[])
+    with pytest.raises(ValueError):
+        RubricJudge(lambda p: "", dimensions=[Dimension("a", "d"), Dimension("a", "e")])
+    with pytest.raises(ValueError):
+        RubricJudge()
+
+
+def test_rubric_symmetric_and_async():
+    def biased(prompt):
+        return reply(core_facts=5) if prompt.index("ALPHA") < prompt.index("BETA") else reply(core_facts=1)
+    assert RubricJudge(biased, symmetric=True)("ALPHA", "BETA") == pytest.approx(1 - 0.4 * 0.5)
+
+    async def allm(prompt):
+        return reply()
+    assert asyncio.run(RubricJudge(allm=allm).ascore("a", "b")).score == 1.0
+
+
+def test_pairwise_reports_mean_per_dimension():
+    def llm(prompt):
+        return reply(format=1) if "outlier" in prompt else reply()
+    m = PairwiseConsistency(RubricJudge(llm), sampler=AllPairs())
+    r = m.evaluate(["same", "same", "outlier"])
+    assert r.details["dimensions"]["core_facts"] == 1.0
+    assert r.details["dimensions"]["format"] == pytest.approx(1 / 3)
+    assert r.pairs[0].dimensions is not None

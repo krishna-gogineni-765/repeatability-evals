@@ -38,7 +38,7 @@ def _degenerate(name: str, n_items: int) -> ConsistencyResult:
 
 
 def _pair_score(i: int, j: int, r: SimilarityResult) -> PairScore:
-    return PairScore(i, j, r.score, r.raw, r.reason)
+    return PairScore(i, j, r.score, r.raw, r.reason, r.metadata.get("dimensions"))
 
 
 class PairwiseConsistency(ConsistencyMetric):
@@ -82,6 +82,9 @@ class PairwiseConsistency(ConsistencyMetric):
         details = {"similarity": self.similarity.name, "sampler": type(self.sampler).__name__}
         if self.agreement_threshold is not None:
             details["agreement_rate"] = sum(s >= self.agreement_threshold for s in scores) / len(scores)
+        dims = [p.dimensions for p in pairs if p.dimensions]
+        if dims:  # rubric judges: mean score per dimension, so you can see *what* varies
+            details["dimensions"] = {k: mean([d[k] for d in dims]) for k in dims[0]}
         return ConsistencyResult(
             self.name, self.aggregate(scores), min(scores), n_items, len(pairs), pairs, details
         )

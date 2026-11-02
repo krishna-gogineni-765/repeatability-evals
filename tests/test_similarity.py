@@ -1,6 +1,6 @@
 import pytest
 
-from consistency_evals import (
+from repeatability_evals import (
     DiceSimilarity,
     EditSimilarity,
     EmbeddingCosine,
@@ -15,7 +15,7 @@ from consistency_evals import (
     SimilarityResult,
     as_similarity,
 )
-from consistency_evals.similarity.text import ngram_set, tokenize
+from repeatability_evals.similarity.text import ngram_set, tokenize
 
 
 # ---- base contract --------------------------------------------------------

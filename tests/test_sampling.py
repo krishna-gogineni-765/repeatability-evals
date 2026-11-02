@@ -2,7 +2,7 @@ import itertools
 
 import pytest
 
-from consistency_evals import AllPairs, AnchorPairs, CycleSampler, RandomPairs, cycle_pairs
+from repeatability_evals import AllPairs, AnchorPairs, CycleSampler, RandomPairs, cycle_pairs
 
 
 def test_all_pairs():

@@ -1,7 +1,7 @@
-"""consistency-evals: composable tools for measuring how consistent an LLM system's runs are."""
+"""repeatability-evals: consistency evals for non-deterministic LLM systems."""
 from .dataset import DatasetResult, aevaluate_groups, evaluate_groups
 from .metrics import ClusterConsistency, ConsistencyMetric, PairwiseConsistency, TotalAgreement
-from .prompts import SEMANTIC_EQUIVALENCE_PROMPT
+from .prompts import DEFAULT_DIMENSIONS, SEMANTIC_EQUIVALENCE_PROMPT, Dimension, build_rubric_prompt
 from .sampling import AllPairs, AnchorPairs, CycleSampler, PairSampler, RandomPairs, cycle_pairs
 from .similarity import (
     DiceSimilarity,
@@ -16,6 +16,7 @@ from .similarity import (
     OverlapCoefficient,
     RankBiasedOverlap,
     RougeL,
+    RubricJudge,
     Similarity,
     as_similarity,
 )
@@ -30,7 +31,8 @@ __all__ = [
     "Similarity", "FunctionSimilarity", "as_similarity",
     "JaccardSimilarity", "DiceSimilarity", "OverlapCoefficient",
     "ExactMatch", "NgramJaccard", "RougeL", "EditSimilarity",
-    "RankBiasedOverlap", "EmbeddingCosine", "LLMJudge", "JudgeParseError",
+    "RankBiasedOverlap", "EmbeddingCosine", "LLMJudge", "RubricJudge", "JudgeParseError",
+    "Dimension", "DEFAULT_DIMENSIONS", "build_rubric_prompt",
     "PairSampler", "AllPairs", "CycleSampler", "RandomPairs", "AnchorPairs", "cycle_pairs",
     "ConsistencyResult", "PairScore", "SimilarityResult", "SEMANTIC_EQUIVALENCE_PROMPT",
 ]

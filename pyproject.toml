@@ -3,14 +3,14 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "consistency-evals"
+name = "repeatability-evals"
 version = "0.1.0"
-description = "Composable tools for measuring how consistent repeated or perturbed runs of an LLM system are."
+description = "Consistency evals for non-deterministic systems: LLM generation, agentic retrieval, agent workflows."
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.9"
 authors = [{ name = "Krishna Gogineni" }]
-keywords = ["llm", "evaluation", "consistency", "rag", "reliability", "agents"]
+keywords = ["llm", "evaluation", "consistency", "repeatability", "non-determinism", "rag", "retrieval", "agents", "reliability", "llm-as-judge"]
 classifiers = [
   "Programming Language :: Python :: 3",
   "License :: OSI Approved :: MIT License",
@@ -22,7 +22,7 @@ dependencies = []  # core is pure standard library
 dev = ["pytest>=7", "ruff>=0.5"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/consistency_evals"]
+packages = ["src/repeatability_evals"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -34,3 +34,7 @@ src = ["src", "tests"]
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]
 ignore = ["UP006", "UP007", "UP035", "UP045"]  # keep typing.Optional/List for py3.9 readability
+
+[project.urls]
+Homepage = "https://github.com/krishna-gogineni-765/repeatability-evals"
+Issues = "https://github.com/krishna-gogineni-765/repeatability-evals/issues"
