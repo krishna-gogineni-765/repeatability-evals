@@ -100,3 +100,41 @@ class AnchorPairs:
         if not 0 <= self.anchor < n_items:
             raise IndexError(f"anchor {self.anchor} out of range for {n_items} items")
         return [_norm(self.anchor, k) for k in range(n_items) if k != self.anchor]
+
+
+@dataclass
+class CrossSampler:
+    """Pairs between two groups of runs, e.g. baseline runs vs. candidate runs.
+
+    Treats ``A + B`` as one list of ``n_a + n_b`` items and returns only (a, b) pairs. The
+    default budget is ``max(n_a, n_b)``: every run on both sides is compared at least once.
+    Use ``budget=None`` with small groups for all ``n_a * n_b`` pairs via ``budget=n_a * n_b``.
+    """
+
+    n_a: int
+    budget: Optional[int] = None
+    seed: int = 0
+
+    def sample(self, n_items: int) -> List[Pair]:
+        n_a, n_b = self.n_a, n_items - self.n_a
+        if n_a < 1 or n_b < 1:
+            return []
+        total = n_a * n_b
+        budget = max(n_a, n_b) if self.budget is None else self.budget
+        if budget < 1:
+            raise ValueError("budget must be >= 1")
+        if budget >= total:
+            return [(i, n_a + j) for i in range(n_a) for j in range(n_b)]
+        rng = random.Random(self.seed)
+        a, b = list(range(n_a)), list(range(n_b))
+        rng.shuffle(a)
+        rng.shuffle(b)
+        span = max(n_a, n_b)  # span <= lcm(n_a, n_b), so these pairs are distinct
+        chosen = [(a[k % n_a], b[k % n_b]) for k in range(span)]
+        if budget < span:
+            chosen = chosen[:budget]
+        else:
+            rest = [(i, j) for i in range(n_a) for j in range(n_b) if (i, j) not in set(chosen)]
+            rng.shuffle(rest)
+            chosen += rest[: budget - span]
+        return [(i, n_a + j) for i, j in chosen]

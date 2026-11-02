@@ -35,6 +35,9 @@ src = ["src", "tests"]
 select = ["E", "F", "I", "B", "UP"]
 ignore = ["UP006", "UP007", "UP035", "UP045"]  # keep typing.Optional/List for py3.9 readability
 
+[project.scripts]
+repeatability-evals = "repeatability_evals.cli:main"
+
 [project.urls]
 Homepage = "https://github.com/krishna-gogineni-765/repeatability-evals"
 Issues = "https://github.com/krishna-gogineni-765/repeatability-evals/issues"

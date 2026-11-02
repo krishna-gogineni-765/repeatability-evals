@@ -2,109 +2,128 @@
 
 **Consistency evals for non-deterministic systems: LLM generation, agentic retrieval, agent workflows.**
 
-Composable tools for measuring **how consistent an LLM system is with itself**: the same
-input run several times, or an input and its paraphrases, and how much the outputs agree.
+Most evals ask *"is the output correct?"* and need gold labels to answer. This library asks
+two questions that need **none**:
 
-Most eval libraries score one run for quality. A system can average 90% on quality and still
-give a customer a different answer every time they ask. This package measures that spread.
+1. **Is my system consistent with itself?** Same input, N runs: do the answers, the retrieved
+   documents, the tool-call traces agree?
+2. **Did anything change when I changed something?** Model upgrade, prompt edit, new index,
+   framework bump: which inputs behave differently, *beyond the system's own run-to-run noise*,
+   and *how* (facts? numbers? format? refusals?).
 
-It is deliberately **unaware of what you are comparing**. It has no notion of "answers",
-"retrieval" or "agents": it compares *items*. You choose the items and the similarity:
+## Why it matters
 
-| You have N of ...                    | Use a similarity such as                         |
-|--------------------------------------|--------------------------------------------------|
-| final answers (free text)            | `LLMJudge`, `EmbeddingCosine`, `RougeL`          |
-| retrieved chunk IDs                  | `JaccardSimilarity`                              |
-| retrieved chunk text                 | `NgramJaccard` (robust to re-chunking)           |
-| ranked result lists                  | `RankBiasedOverlap`                              |
-| agent tool-call traces               | `EditSimilarity` / `ExactMatch` on a trace string|
-| anything else                        | subclass `Similarity`, or pass a plain function  |
+| If you are... | You can... |
+|---|---|
+| **a platform or model provider** shipping an update | run it offline on a regression set and see which customer-style workflows would shift before you release |
+| **an enterprise on a vendor's LLM or agent platform** | run it yourself, on your own data and cluster, to decide whether an upstream upgrade is safe for the workflows you built. Nothing leaves your environment, and `include_text=False` keeps raw text out of reports |
+| **building a RAG or agent product** | track whether retrieval and answers stay stable across runs, and catch silent drift from non-deterministic infrastructure |
+| **without labelled data** | still get a signal: consistency needs only outputs, not answers |
 
-Consistency is **not** correctness: a system that is consistently wrong scores 1.0. Pair this
-with an accuracy metric.
+Consistency is not correctness: a system can be consistently wrong. It tells you *where to
+look*, and it is often the only signal available for a workflow nobody has labelled.
 
-## Install
-
-```bash
-pip install repeatability-evals   # pure standard library, no required dependencies
-```
-
-## Quickstart
+## See what changed
 
 ```python
-from repeatability_evals import (
-    PairwiseConsistency, JaccardSimilarity, NgramJaccard, LLMJudge, evaluate_groups,
-)
+from repeatability_evals import compare_versions, RubricJudge
 
-# 1. Retrieval: did the 5 runs fetch the same chunks?
-ids = PairwiseConsistency(JaccardSimilarity())
-print(ids.evaluate([["a", "b", "c"], ["a", "b", "d"], ["a", "b", "c"]]).score)
-
-# 2. Same evidence, different chunk boundaries?
-text = PairwiseConsistency(NgramJaccard(n=3))
-print(text.evaluate([["backup jobs run nightly"], ["backup jobs", "run nightly"]]).score)
-
-# 3. Answers: an LLM judge scores semantic equivalence. Bring any `str -> str` function.
-def complete(prompt: str) -> str: ...            # your model call
-answers = PairwiseConsistency(LLMJudge(complete), agreement_threshold=0.75)
-r = answers.evaluate(["Retention is 30 days.", "30 days.", "Retention is 90 days."],
-                     context={"query": "How long are backups retained?"})
-print(r.score, r.details["agreement_rate"], [p.reason for p in r.pairs])
-
-# 4. A whole dataset: one group per question, with a bootstrap confidence interval.
-report = evaluate_groups({"q1": runs_q1, "q2": runs_q2}, ids)
-print(report.score, report.ci, report.worst(3))
+# {input_id: [output of run 1, run 2, run 3, ...]} for each version. No labels.
+report = compare_versions(v1_runs, v2_runs, RubricJudge(my_llm), names=("v1", "v2"))
+print(report.verdict)            # no_meaningful_change | changed | inconclusive
+report.save("report.md")         # also .html / .json
 ```
+
+```
+# v1 vs v2: consistency report
+CHANGED: the candidate's outputs differ from the baseline's by more than run-to-run noise explains.
+120 inputs compared; 34% changed beyond the noise floor (per-input drift > 0.1).
+
+| v1 vs itself (noise floor)               | 0.925 |
+| v2 vs itself                             | 0.948 |
+| v1 vs v2                                 | 0.850 |
+| drift (expected - cross; 0 = no change)  | +0.087 (95% CI +0.060 to +0.116) |
+
+## What changed
+| format            | +0.200 |
+| specifics         | +0.115 |
+| supporting_detail | +0.100 |
+| core_facts        | +0.057 |
+Changed inputs by main driver: 21 mainly in `format`, 20 mainly in `specifics`.
+
+### `q000`: drift +0.62 (cross 0.38 vs expected 1.00)
+- Main driver: `specifics`
+- Judge: Retention period differs.
+- v1: Retention for gold is 30 days.
+- v2: - Retention for gold is 90 days. - Applies to all sites.
+```
+
+*(Real output of `examples/compare_versions_demo.py`, which uses simulated runs and a scripted
+stand-in for the LLM judge so it runs without an API key.)*
+
+The key idea is the **noise floor**. A non-deterministic system never matches itself perfectly,
+so comparing v2 to v1 naively overstates change. We measure how much v1 differs from *itself*
+and v2 from *itself*, and report only the **extra** disagreement across versions (`drift`).
+Two equally noisy systems show no drift; a real change does. The report also says *what kind*
+of change it is, since format drift and changed numbers deserve different decisions.
+
+From the shell, with no code and no model (offline n-gram similarity), or with your own LLM:
+
+```bash
+pip install repeatability-evals
+repeatability-evals compare v1.json v2.json --out report.md
+repeatability-evals compare v1.json v2.json --judge mypkg.llm:complete --rubric --out report.html
+```
+
+Input is JSON: `{"input id": ["run 1", "run 2", ...]}`. The exit code is `0` (no meaningful
+change), `1` (inconclusive) or `2` (changed), so it can gate a CI pipeline.
+
+## Measure self-consistency
+
+```python
+from repeatability_evals import PairwiseConsistency, JaccardSimilarity, NgramJaccard, RubricJudge
+
+PairwiseConsistency(JaccardSimilarity()).evaluate(chunk_ids_per_run)                 # retrieved IDs
+PairwiseConsistency(NgramJaccard(3)).evaluate(chunk_texts_per_run)                   # robust to re-chunking
+PairwiseConsistency(RubricJudge(my_llm)).evaluate(answers, context={"query": q})     # answers
+```
+
+Over a dataset, `evaluate_groups({input_id: runs, ...}, metric)` returns the mean, a bootstrap
+confidence interval and the least consistent inputs.
 
 ## Design
 
-Three small pieces, each replaceable:
+The library never knows whether you are comparing answers, chunk IDs or agent traces. It
+compares *items*; you pick the similarity.
 
-* **`Similarity`**: compare two items, return a score in `[0, 1]` (optionally with a raw value
-  and a rationale). Built in: set overlap (`Jaccard`, `Dice`, `OverlapCoefficient`), text
-  (`ExactMatch`, `NgramJaccard`, `RougeL`, `EditSimilarity`), ranking (`RankBiasedOverlap`),
-  embeddings (`EmbeddingCosine`, bring your own embed function), and `RubricJudge` and `LLMJudge`.
-* **`PairSampler`**: which pairs of the N items to compare (see below).
-* **`ConsistencyMetric`**: combines them. `PairwiseConsistency` averages similarity over
-  sampled pairs; `ClusterConsistency` groups items into "same answer" clusters and reports the
-  largest cluster's share plus the entropy of the partition; `TotalAgreement` is the
-  all-N-identical rate.
+* **`Similarity`** scores two items in `[0, 1]`: sets (`JaccardSimilarity`, `DiceSimilarity`,
+  `OverlapCoefficient`), text (`ExactMatch`, `NgramJaccard`, `RougeL`, `EditSimilarity`),
+  rankings (`RankBiasedOverlap`), embeddings (`EmbeddingCosine`, bring your own embed
+  function) and LLM judges (`RubricJudge`, `LLMJudge`). Subclass it, or pass a plain function.
+* **`PairSampler`** picks which of the N(N-1)/2 pairs to compare. The default `CycleSampler`
+  costs N comparisons and touches every run twice; `CrossSampler` does the same across versions.
+* **Metrics**: `PairwiseConsistency` (mean similarity), `ClusterConsistency` (largest
+  "same answer" cluster, plus entropy), `TotalAgreement` (all N identical) and `compare_versions`.
 
-Everything has an async twin (`aevaluate`, `aevaluate_groups`) with bounded concurrency, which
-matters when the similarity is an LLM call.
+Everything has an async twin (`aevaluate`, `acompare_versions`) with bounded concurrency. The
+core has **no dependencies**; you bring the model, as any `str -> str` function.
 
-### Sampling instead of all pairs
+### The judge
 
-All pairs cost N(N-1)/2 comparisons: 10 for 5 runs, 45 for 10. The default `CycleSampler`
-compares a random cycle through the runs, so N pairs, and every run is compared at least twice.
-It is seeded and reproducible. `AllPairs()` gives the exact value; `RandomPairs(k)` and
-`AnchorPairs()` (every run against one reference) are also available. `benchmarks/sampling_error.py`
-measures the error this introduces on synthetic data so you can see the trade-off for your N.
+`RubricJudge` scores five dimensions of agreement in one call: `core_facts`, `specifics`,
+`supporting_detail`, `stance` (answer vs hedge vs refuse) and `format`. The headline is a
+weighted mean (core facts count most) and the per-dimension means explain *what* varies. Pass
+your own `Dimension`s to change them. `LLMJudge` is the single 1-5 semantic-equivalence score.
+`symmetric=True` judges both orders to cancel position bias. **Validate any judge against human
+ratings on your own data before relying on it.**
 
-### The LLM judges
+### Sampling cost
 
-`RubricJudge` is the recommended judge for free-text outputs. One call scores five dimensions
-of agreement (1-5 each): `core_facts`, `specifics` (names, numbers, dates), `supporting_detail`,
-`stance` (answer vs hedge vs refuse) and `format`. The headline score is their weighted mean
-(core facts count most), and `PairwiseConsistency` reports the mean per dimension in
-`details["dimensions"]`, so you can see *what* varies between runs: a system whose facts are
-stable but whose formatting drifts looks very different from one that changes its answer.
-Pass your own `Dimension`s to add, remove or reweight (e.g. for agent traces).
+All pairs for 10 runs is 45 judge calls; the default sampler uses 10. On synthetic data the
+per-input error versus all pairs was about 0.03 with no bias (`benchmarks/sampling_error.py`);
+check it on your data, or use `AllPairs()` for the exact value.
 
-```python
-from repeatability_evals import RubricJudge, PairwiseConsistency
-m = PairwiseConsistency(RubricJudge(complete))
-r = m.evaluate(runs, context={"query": question})
-print(r.score, r.details["dimensions"])   # {'core_facts': 0.95, 'format': 0.4, ...}
-```
-
-`LLMJudge` is the single-score version (one 1-5 semantic-equivalence rating). Both take any completion function, so it works with any provider or a local model. The
-default rubrics (1-5, normalised to `[0, 1]`) are in `repeatability_evals.prompts`. `symmetric=True`
-judges both orderings to cancel position bias at twice the cost. **Validate any judge against
-human ratings on your own data before relying on it**; agreement depends on the domain and the
-judge model.
-
-## Writing your own similarity
+### Writing your own similarity
 
 ```python
 from repeatability_evals import Similarity, PairwiseConsistency
@@ -114,15 +133,15 @@ class SameFirstSentence(Similarity):
     def compute(self, a, b, *, context=None):
         return float(a.split(".")[0] == b.split(".")[0])
 
-PairwiseConsistency(SameFirstSentence())
+PairwiseConsistency(SameFirstSentence())      # or PairwiseConsistency(lambda a, b: ...)
 ```
 
-or just `PairwiseConsistency(lambda a, b: ...)`.
+## Related work
+
+Vectara's Open RAG Eval includes a consistency evaluator. Frameworks such as Ragas, DeepEval and
+Phoenix can repeat runs but score each run independently. This library focuses on run-to-run and
+version-to-version agreement as a reusable primitive those tools can build on.
 
 ## Status
 
-Early (0.1). The API may change before 1.0.
-
-## License
-
-MIT
+Early (0.x); the API may change before 1.0. MIT licensed.
