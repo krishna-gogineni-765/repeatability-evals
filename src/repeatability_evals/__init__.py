@@ -24,7 +24,12 @@ from .similarity import (
 from .stats import bootstrap_ci
 from .types import ConsistencyResult, PairScore, SimilarityResult
 
-__version__ = "0.1.0"
+try:
+    from importlib.metadata import PackageNotFoundError, version as _version
+
+    __version__ = _version("repeatability-evals")
+except PackageNotFoundError:  # running from a source checkout that is not installed
+    __version__ = "0+unknown"
 
 __all__ = [
     "compare_versions", "acompare_versions", "VersionComparison", "InputComparison", "CrossSampler",
