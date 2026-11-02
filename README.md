@@ -3,11 +3,11 @@
 **Consistency evals for non-deterministic systems: LLM generation, agentic retrieval, agent workflows.**
 
 Most evals ask *"is the output correct?"* and need gold labels to answer. This library asks
-two questions that need **none**:
+two questions that are extremely important in enterprise settinga and need **no gold labels**:
 
-1. **Is my system consistent with itself?** Same input, N runs: do the answers, the retrieved
+1. **Is my system consistent/repeatable with itself?** Same input, N runs: do the answers, the retrieved
    documents, the tool-call traces agree?
-2. **Did anything change when I changed something?** Model upgrade, prompt edit, new index,
+2. **Did anything user facing change when I changed something in the backend?** Model upgrade, prompt edit, new index,
    framework bump: which inputs behave differently, *beyond the system's own run-to-run noise*,
    and *how* (facts? numbers? format? refusals?).
 
@@ -17,13 +17,11 @@ two questions that need **none**:
 |---|---|
 | **a platform or model provider** shipping an update | run it offline on a regression set and see which customer-style workflows would shift before you release |
 | **an enterprise on a vendor's LLM or agent platform** | run it yourself, on your own data and cluster, to decide whether an upstream upgrade is safe for the workflows you built. Nothing leaves your environment, and `include_text=False` keeps raw text out of reports |
-| **building a RAG or agent product** | track whether retrieval and answers stay stable across runs, and catch silent drift from non-deterministic infrastructure |
+| **building an agent, RAG or harness product** | track whether retrieval and answers stay stable across runs, and catch silent drift from non-deterministic infrastructure |
 | **without labelled data** | still get a signal: consistency needs only outputs, not answers |
 
-Consistency is not correctness: a system can be consistently wrong. It tells you *where to
-look*, and it is often the only signal available for a workflow nobody has labelled.
 
-## See what changed
+## Usage pattern 1: See what changed
 
 ```python
 from repeatability_evals import compare_versions, RubricJudge
@@ -78,7 +76,7 @@ repeatability-evals compare v1.json v2.json --judge mypkg.llm:complete --rubric 
 Input is JSON: `{"input id": ["run 1", "run 2", ...]}`. The exit code is `0` (no meaningful
 change), `1` (inconclusive) or `2` (changed), so it can gate a CI pipeline.
 
-## Measure self-consistency
+## Usage pattern 2: Measure self-consistency
 
 ```python
 from repeatability_evals import PairwiseConsistency, JaccardSimilarity, NgramJaccard, RubricJudge
@@ -94,7 +92,7 @@ confidence interval and the least consistent inputs.
 ## Design
 
 The library never knows whether you are comparing answers, chunk IDs or agent traces. It
-compares *items*; you pick the similarity.
+compares *items*; you pick the similarity metric that makes sense for what you are comparing.
 
 * **`Similarity`** scores two items in `[0, 1]`: sets (`JaccardSimilarity`, `DiceSimilarity`,
   `OverlapCoefficient`), text (`ExactMatch`, `NgramJaccard`, `RougeL`, `EditSimilarity`),
@@ -136,12 +134,3 @@ class SameFirstSentence(Similarity):
 PairwiseConsistency(SameFirstSentence())      # or PairwiseConsistency(lambda a, b: ...)
 ```
 
-## Related work
-
-Vectara's Open RAG Eval includes a consistency evaluator. Frameworks such as Ragas, DeepEval and
-Phoenix can repeat runs but score each run independently. This library focuses on run-to-run and
-version-to-version agreement as a reusable primitive those tools can build on.
-
-## Status
-
-Early (0.x); the API may change before 1.0. MIT licensed.
